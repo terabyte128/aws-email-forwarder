@@ -9,15 +9,24 @@ import os
 def lambda_handler(event, context):
     source_email = os.environ.get("SOURCE_EMAIL")
     target_email = os.environ.get("TARGET_EMAIL")
+    s3_bucket_name = os.environ.get("S3_BUCKET_NAME")
 
-    if any(i is None for i in [source_email, target_email]):
+    if any(i is None for i in [source_email, target_email, s3_bucket_name]):
         raise ValueError("SOURCE_EMAIL and TARGET_EMAIL are required")
 
-    msg = json.loads(event["Records"][0]["Sns"]["Message"])
-    content = base64.b64decode(msg["content"])
+    message_id = event["Records"][0]["ses"]["mail"]["messageId"]
+
+    s3_client = boto3.client("s3")
+
+    email_obj = s3_client.get_object(
+        Bucket=s3_bucket_name,
+        Key=message_id,
+    )
+
+    content = email_obj["Body"].read()
 
     letter = email.message_from_bytes(content)
-    client = boto3.client("ses")
+    ses_client = boto3.client("ses")
 
     orig_from = letter["From"]
 
@@ -36,7 +45,12 @@ def lambda_handler(event, context):
 
     letter.replace_header("From", new_from)
 
-    client.send_raw_email(
+    ses_client.send_raw_email(
         Destinations=[target_email],
         RawMessage={"Data": bytes(letter)},
+    )
+
+    s3_client.delete_object(
+        Bucket=s3_bucket_name,
+        Key=message_id,
     )

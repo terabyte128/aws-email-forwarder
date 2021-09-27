@@ -14,7 +14,10 @@ Create a `variables.tfvars` file with the following:
 sender_username = "{desired_sender_username}"
 source_domain = "{domain_you_own}"
 target_email = "{email_to_receive_forwards}"
+s3_bucket_name = "{name_of_s3_bucket_for_email_storage}"
 ```
+
+NB: emails are immediately deleted from the S3 bucket after the lambda is finished, so they shouldn't incur large costs.
 
 then run `terraform apply --var-file variables.tfvars`.
 
@@ -24,6 +27,3 @@ You'll need to manually go into AWS and verify your domain in SES by setting the
 
 You'll need to get your account out of the SES sandbox if you don't want to be subject to their [quota limits](https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html). That being said, for this type of service, it's unlikely you'll exceed them.
 
-## Future Work
-
-Right now, emails > 150KB will be bounced because the SNS message queue doesn't support them. In the future I'd like to replace this with an S3 bucket to temporarily store them until the lambda is invoked.

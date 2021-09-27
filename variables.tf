@@ -12,3 +12,8 @@ variable "target_email" {
   description = "Target email address for forwarded messages"
   type        = string
 }
+
+variable "s3_bucket_name" {
+  description = "Bucket name to temporarily store emails"
+  type        = string
+}

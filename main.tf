@@ -1,8 +1,12 @@
 locals {
-  email_lambda_name = "email-forwarder-lambda"
+  email_lambda_name     = "email-forwarder-lambda"
+  ses_receipt_rule_name = "send-to-s3"
+  ses_receipt_rule_arn  = "arn:aws:ses:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:receipt-rule-set/${aws_ses_receipt_rule_set.potential_spam.rule_set_name}:receipt-rule/${local.ses_receipt_rule_name}"
 }
 
 data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
 
 resource "aws_ses_domain_identity" "source_domain" {
   domain = var.source_domain
@@ -20,47 +24,67 @@ resource "aws_ses_active_receipt_rule_set" "potential_spam" {
   rule_set_name = aws_ses_receipt_rule_set.potential_spam.rule_set_name
 }
 
-resource "aws_ses_receipt_rule" "publish_to_sns" {
-  name          = "publish-to-sns"
-  rule_set_name = aws_ses_receipt_rule_set.potential_spam.rule_set_name
-  enabled       = true
-
-  sns_action {
-    position  = 1
-    encoding  = "Base64"
-    topic_arn = aws_sns_topic.forward_to_lambda.arn
-  }
-}
-
-data "aws_iam_policy_document" "ses_publish_to_sns" {
+data "aws_iam_policy_document" "ses_write_to_s3" {
   statement {
-    actions   = ["sns:Publish"]
-    resources = [aws_sns_topic.forward_to_lambda.arn]
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.email_bucket.arn}/*"]
+
     principals {
       type        = "Service"
       identifiers = ["ses.amazonaws.com"]
     }
+
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceAccount"
       values   = [data.aws_caller_identity.current.account_id]
     }
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [local.ses_receipt_rule_arn]
+    }
   }
 }
 
-resource "aws_sns_topic" "forward_to_lambda" {
-  name = "forward-to-lambda"
+resource "aws_s3_bucket_policy" "ses_write_to_s3" {
+  bucket = var.s3_bucket_name
+  policy = data.aws_iam_policy_document.ses_write_to_s3.json
 }
 
-resource "aws_sns_topic_policy" "forward_to_lambda" {
-  arn    = aws_sns_topic.forward_to_lambda.arn
-  policy = data.aws_iam_policy_document.ses_publish_to_sns.json
+resource "aws_s3_bucket" "email_bucket" {
+  bucket = var.s3_bucket_name
+  acl    = "private"
 }
 
-resource "aws_sns_topic_subscription" "forward_to_lambda" {
-  topic_arn = aws_sns_topic.forward_to_lambda.arn
-  protocol  = "lambda"
-  endpoint  = aws_lambda_function.email_lambda.arn
+resource "aws_s3_bucket_public_access_block" "email_bucket" {
+  bucket                  = var.s3_bucket_name
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_ses_receipt_rule" "send_to_s3" {
+  name          = local.ses_receipt_rule_name
+  rule_set_name = aws_ses_receipt_rule_set.potential_spam.rule_set_name
+  enabled       = true
+
+  s3_action {
+    position    = 1
+    bucket_name = var.s3_bucket_name
+  }
+
+  lambda_action {
+    position     = 2
+    function_arn = aws_lambda_function.email_lambda.arn
+  }
+
+  depends_on = [
+    aws_s3_bucket_policy.ses_write_to_s3,
+    aws_lambda_permission.ses_call_lambda
+  ]
 }
 
 data "aws_iam_policy_document" "lambda_assume_role" {
@@ -92,6 +116,14 @@ data "aws_iam_policy_document" "lambda_resource_access" {
     ]
     resources = ["arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:*"]
   }
+
+  statement {
+    actions = [
+      "s3:GetObject",
+      "s3:DeleteObject"
+    ]
+    resources = ["${aws_s3_bucket.email_bucket.arn}/*"]
+  }
 }
 
 resource "aws_iam_policy" "lambda_resource_access" {
@@ -110,23 +142,28 @@ resource "aws_lambda_function" "email_lambda" {
   runtime       = "python3.9"
   handler       = "lambda_function.lambda_handler"
   filename      = "email-lambda.zip"
+  timeout       = 10
+
   environment {
     variables = {
-      SOURCE_EMAIL = "${var.sender_username}@${var.source_domain}"
-      TARGET_EMAIL = var.target_email
+      SOURCE_EMAIL   = "${var.sender_username}@${var.source_domain}"
+      TARGET_EMAIL   = var.target_email
+      S3_BUCKET_NAME = var.s3_bucket_name
     }
   }
+
   depends_on = [
     aws_iam_role_policy_attachment.lambda_assume_role_attachment,
     aws_cloudwatch_log_group.email_lambda,
   ]
 }
 
-resource "aws_lambda_permission" "sns_call_lambda" {
-  function_name = aws_lambda_function.email_lambda.function_name
-  action        = "lambda:InvokeFunction"
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.forward_to_lambda.arn
+resource "aws_lambda_permission" "ses_call_lambda" {
+  function_name  = aws_lambda_function.email_lambda.function_name
+  action         = "lambda:InvokeFunction"
+  principal      = "ses.amazonaws.com"
+  source_account = data.aws_caller_identity.current.account_id
+  source_arn     = local.ses_receipt_rule_arn
 }
 
 resource "aws_cloudwatch_log_group" "email_lambda" {

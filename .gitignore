@@ -17,3 +17,4 @@ crash.log
 *.tfvars
 *.zip
 .DS_Store
+*.swp

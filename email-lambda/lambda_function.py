@@ -38,7 +38,13 @@ def lambda_handler(event, context):
         new_from = source_email
 
     for header in letter.keys():
-        if header not in ["Subject", "To", "Content-Type", "From"]:
+        if header not in [
+            "Subject",
+            "To",
+            "Content-Type",
+            "From",
+            "Content-Transfer-Encoding",
+        ]:
             del letter[header]
 
     letter["Reply-To"] = orig_from
